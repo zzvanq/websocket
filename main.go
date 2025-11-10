@@ -4,13 +4,40 @@ import (
 	"bufio"
 	"crypto/sha1"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"strings"
 )
+
+const (
+	// rsv1Mask       = 1 << 6
+	// rsv2Mask       = 1 << 5
+	// rsv3Mask       = 1 << 4
+	finMask        = 1 << 7
+	opCodeMask     = 0x0F
+	maskBit        = 1 << 7
+	payloadLenMask = 0x7F
+)
+
+const (
+	ContinuationFrame = 0x0
+	TextFrame         = 0x1
+	BinaryFrame       = 0x2
+	ConnectionClose   = 0x8
+	Ping              = 0x9
+	Pong              = 0xA
+)
+
+type Fragment struct {
+	OpCode  byte
+	Fin     bool
+	Payload []byte
+}
 
 type Conn struct {
 	conn net.Conn
@@ -19,6 +46,79 @@ type Conn struct {
 
 func (c *Conn) Close() error {
 	return c.conn.Close()
+}
+
+func (c *Conn) readFragment() (*Fragment, error) {
+	headers := make([]byte, 14)
+	_, err := io.ReadFull(c.brw, headers)
+	if err != nil {
+		return nil, err
+	}
+
+	fin := (headers[0] & finMask) != 0
+	// NOTE: must fail if an extension was not negotiated and this bits are not set,
+	// but what's the point? (idk) - ignore
+	// rsv1 := headers[0] & rsv1Bit
+	// rsv2 := headers[0] & rsv2Bit
+	// rsv3 := headers[0] & rsv3Bit
+	opCode := headers[0] & opCodeMask
+
+	mask := headers[1] & maskBit
+	if mask == 0 {
+		return nil, errors.New("client must mask the message")
+	}
+
+	switch opCode {
+	case ConnectionClose, Ping, Pong:
+		if !fin {
+			return nil, errors.New("control frames must not be fragmented")
+		}
+		return &Fragment{OpCode: opCode, Fin: true}, nil
+	}
+
+	payloadLen := int(headers[1] & payloadLenMask)
+
+	switch payloadLen {
+	case 126:
+		payloadLen = int(binary.BigEndian.Uint16(headers[2:4]))
+	case 127:
+		payloadLen = int(binary.BigEndian.Uint64(headers[2:10]))
+	}
+
+	maskKey := headers[10:14]
+
+	payload := make([]byte, payloadLen)
+	_, err = io.ReadFull(c.brw, payload)
+	if err != nil {
+		return nil, err
+	}
+
+	// NOTE: i have no idea if loop unrolling is worth it
+	for i := 4; i < len(payload); i += 4 {
+		payload[i] ^= maskKey[i%4]
+		payload[i+1] ^= maskKey[i+1%4]
+		payload[i+2] ^= maskKey[i+2%4]
+		payload[i+3] ^= maskKey[i+3%4]
+	}
+
+	return &Fragment{Fin: fin, OpCode: opCode, Payload: payload}, nil
+}
+
+func (c *Conn) Read() ([]byte, error) {
+	// TODO: type Message struct
+	var msg []byte
+	for {
+		fragment, err := c.readFragment()
+		if err != nil {
+			return nil, err
+		}
+		msg = append(msg, fragment.Payload...)
+		if fragment.Fin {
+			break
+		}
+	}
+
+	return msg, nil
 }
 
 func newConn(conn net.Conn, brw *bufio.ReadWriter) *Conn {
