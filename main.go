@@ -14,6 +14,8 @@ import (
 	"strings"
 )
 
+var ErrConnectionClosed = errors.New("connection was closed")
+
 const (
 	// rsv1Mask       = 1 << 6
 	// rsv2Mask       = 1 << 5
@@ -33,29 +35,91 @@ const (
 	Pong              = 0xA
 )
 
-type Fragment struct {
+type Frame struct {
 	OpCode  byte
 	Fin     bool
 	Payload []byte
 }
 
+type Message struct {
+	Type byte
+	Data []byte
+}
+
+const (
+	statusOpen   = iota + 126
+	statusClosed = iota
+)
+
 type Conn struct {
-	conn net.Conn
-	brw  *bufio.ReadWriter
+	status   int
+	isServer bool
+	conn     net.Conn
+	brw      bufio.ReadWriter
 }
 
 func (c *Conn) Close() error {
-	return c.conn.Close()
+	err := c.conn.Close()
+	if err != nil {
+		return err
+	}
+	c.status = statusClosed
+	return nil
 }
 
-func (c *Conn) readFragment() (*Fragment, error) {
+func (c *Conn) Read() (*Message, error) {
+	if c.status == statusClosed {
+		return nil, ErrConnectionClosed
+	}
+
+	var recvd []byte
+
+	for {
+		frame, err := c.readFrame()
+		if err != nil {
+			return nil, err
+		}
+
+		switch frame.OpCode {
+		case ConnectionClose:
+			c.status = statusClosed
+			return &Message{Type: frame.OpCode, Data: frame.Payload}, ErrConnectionClosed
+		case Pong:
+			continue
+		case Ping:
+			// TODO: send pong
+			continue
+		case TextFrame, BinaryFrame:
+			if len(recvd) != 0 {
+				return nil, errors.New("unexpected frame")
+			}
+		case ContinuationFrame:
+			if len(recvd) == 0 {
+				return nil, errors.New("unexpected frame")
+			}
+		}
+
+		if frame.Fin {
+			if len(recvd) == 0 {
+				return &Message{Type: frame.OpCode, Data: frame.Payload}, nil
+			}
+
+			recvd = append(recvd, frame.Payload...)
+			return &Message{Type: frame.OpCode, Data: recvd}, nil
+		}
+
+		recvd = append(recvd, frame.Payload...)
+	}
+}
+
+func (c *Conn) readFrame() (*Frame, error) {
 	headers := make([]byte, 14)
 	_, err := io.ReadFull(c.brw, headers)
 	if err != nil {
 		return nil, err
 	}
 
-	fin := (headers[0] & finMask) != 0
+	isFin := (headers[0] & finMask) == 1
 	// NOTE: must fail if an extension was not negotiated and this bits are not set,
 	// but what's the point? (idk) - ignore
 	// rsv1 := headers[0] & rsv1Bit
@@ -63,17 +127,9 @@ func (c *Conn) readFragment() (*Fragment, error) {
 	// rsv3 := headers[0] & rsv3Bit
 	opCode := headers[0] & opCodeMask
 
-	mask := headers[1] & maskBit
-	if mask == 0 {
-		return nil, errors.New("client must mask the message")
-	}
-
-	switch opCode {
-	case ConnectionClose, Ping, Pong:
-		if !fin {
-			return nil, errors.New("control frames must not be fragmented")
-		}
-		return &Fragment{OpCode: opCode, Fin: true}, nil
+	isMasked := (headers[1] & maskBit) == 1
+	if isMasked != c.isServer {
+		return nil, errors.New("incorrect MASK bit")
 	}
 
 	payloadLen := int(headers[1] & payloadLenMask)
@@ -93,32 +149,38 @@ func (c *Conn) readFragment() (*Fragment, error) {
 		return nil, err
 	}
 
-	// NOTE: i have no idea if loop unrolling is worth it
-	for i := 4; i < len(payload); i += 4 {
-		payload[i] ^= maskKey[i%4]
-		payload[i+1] ^= maskKey[i+1%4]
-		payload[i+2] ^= maskKey[i+2%4]
-		payload[i+3] ^= maskKey[i+3%4]
-	}
-
-	return &Fragment{Fin: fin, OpCode: opCode, Payload: payload}, nil
-}
-
-func (c *Conn) Read() ([]byte, error) {
-	// TODO: type Message struct
-	var msg []byte
-	for {
-		fragment, err := c.readFragment()
-		if err != nil {
-			return nil, err
+	if isMasked {
+		// NOTE: i have no idea if loop unrolling is worth it. Just for fun
+		i := 0
+		for ; i+4 <= len(payload); i += 4 {
+			payload[i] ^= maskKey[0]
+			payload[i+1] ^= maskKey[1]
+			payload[i+2] ^= maskKey[2]
+			payload[i+3] ^= maskKey[3]
 		}
-		msg = append(msg, fragment.Payload...)
-		if fragment.Fin {
-			break
+
+		for ; i < len(payload); i++ {
+			payload[i] ^= maskKey[i%4]
 		}
 	}
 
-	return msg, nil
+	switch opCode {
+	case ConnectionClose, Ping, Pong:
+		if !isFin {
+			return nil, errors.New("FIN not set on control frames")
+		}
+		if payloadLen > 125 {
+			return nil, errors.New("control frame payload length is too big (max 125)")
+		}
+	case ContinuationFrame:
+		if isFin {
+			return nil, errors.New("continuation frames must not be final")
+		}
+	default:
+		return nil, errors.New("unknown opcode")
+	}
+
+	return &Frame{Fin: isFin, OpCode: opCode, Payload: payload}, nil
 }
 
 func newConn(conn net.Conn, brw *bufio.ReadWriter) *Conn {
