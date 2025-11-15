@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bufio"
 	"errors"
-	"net"
 	"net/http"
 	"strings"
 )
@@ -39,7 +37,11 @@ func Upgrade(w http.ResponseWriter, r *http.Request) (*Conn, error) {
 		return nil, errors.New(msg)
 	}
 
-	secAccept, err := getSecAccept(r.Header.Get("Sec-WebSocket-Key"))
+	secKey := r.Header.Get("Sec-WebSocket-Key")
+	if secKey == "" {
+		return nil, errors.New("Sec-WebSocket-Key header is empty")
+	}
+	secAccept, err := getSecAccept(secKey)
 	if err != nil {
 		http.Error(w, "Sec-WebSocket-Key header is invalid", http.StatusBadRequest)
 		return nil, err

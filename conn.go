@@ -4,8 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
-	"crypto/sha1"
-	"encoding/base64"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -31,7 +29,10 @@ const (
 	Ping              = 0x9
 	Pong              = 0xA
 )
-const maxFramePayloadLen = 64 * 1024
+const (
+	frameHeadersLen    = 14
+	maxFramePayloadLen = (10 * 1024) - frameHeadersLen
+)
 const (
 	statusOpen   = iota + 1
 	statusClosed = iota
@@ -80,7 +81,7 @@ func (c *Conn) Write(msgType int, data []byte) error {
 		r := min((i+1)*maxFramePayloadLen, len(data))
 		payload := data[l:r]
 
-		f := make([]byte, 14+len(payload))
+		f := make([]byte, frameHeadersLen+len(payload))
 
 		fin := 0x0
 		if i == fn-1 {
@@ -111,7 +112,7 @@ func (c *Conn) Write(msgType int, data []byte) error {
 			}
 			if payloadLen > 0 {
 				maskData(data, f[10:14])
-				copy(f[14:], data)
+				copy(f[frameHeadersLen:], data)
 			}
 		}
 
@@ -173,7 +174,7 @@ func (c *Conn) Read() (*Message, error) {
 }
 
 func (c *Conn) readFrame() (*Frame, error) {
-	headers := make([]byte, 14)
+	headers := make([]byte, frameHeadersLen)
 	_, err := io.ReadFull(c.br, headers)
 	if err != nil {
 		return nil, err
@@ -193,7 +194,6 @@ func (c *Conn) readFrame() (*Frame, error) {
 	}
 
 	payloadLen := uint64(headers[1] & payloadLenMask)
-
 	switch payloadLen {
 	case 126:
 		payloadLen = uint64(binary.BigEndian.Uint16(headers[2:4]))
@@ -245,16 +245,4 @@ func maskData(data []byte, key []byte) {
 	for ; i < len(data); i++ {
 		data[i] ^= key[i%4]
 	}
-}
-
-func getSecAccept(key string) (string, error) {
-	if key == "" {
-		return "", errors.New("Sec-WebSocket-Key header is empty")
-	}
-	h := sha1.New()
-	_, err := h.Write([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(h.Sum(nil)), nil
 }
