@@ -30,13 +30,13 @@ func Dial(ctx context.Context, urlStr string, header http.Header) (*Conn, error)
 		return nil, err
 	}
 
-	req := http.Request{
+	req := &http.Request{
 		Method: http.MethodGet,
 		URL:    u,
 		Host:   u.Host,
 		Header: header,
 	}
-	req.WithContext(ctx)
+	req = req.WithContext(ctx)
 
 	req.Header["Upgrade"] = []string{"websocket"}
 	req.Header["Connection"] = []string{"Upgrade"}
@@ -44,13 +44,10 @@ func Dial(ctx context.Context, urlStr string, header http.Header) (*Conn, error)
 	req.Header["Sec-WebSocket-Version"] = []string{"13"}
 
 	netDialer := net.Dialer{}
-	if deadline, ok := ctx.Deadline(); ok {
-		netDialer.Deadline = deadline
-	}
-	netConn, err := netDialer.Dial(u.Scheme, u.Host)
+	netConn, err := netDialer.DialContext(ctx, u.Scheme, u.Host)
 
 	defer func() {
-		if err != nil {
+		if err != nil && netConn != nil {
 			netConn.Close()
 		}
 	}()
@@ -66,7 +63,7 @@ func Dial(ctx context.Context, urlStr string, header http.Header) (*Conn, error)
 		return nil, err
 	}
 
-	resp, err := http.ReadResponse(br, &req)
+	resp, err := http.ReadResponse(br, req)
 	if err != nil {
 		return nil, err
 	}
@@ -93,4 +90,3 @@ func generateSecKey() (string, error) {
 	}
 	return base64.StdEncoding.EncodeToString(k), nil
 }
-

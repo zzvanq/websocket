@@ -57,6 +57,10 @@ type Conn struct {
 }
 
 func (c *Conn) Close() error {
+	if c.status == statusClosed {
+		return nil
+	}
+	c.Write(ConnectionClose, nil)
 	err := c.conn.Close()
 	if err != nil {
 		return err
@@ -111,8 +115,8 @@ func (c *Conn) Write(msgType int, data []byte) error {
 				panic(err)
 			}
 			if payloadLen > 0 {
-				maskData(data, f[10:14])
-				copy(f[frameHeadersLen:], data)
+				maskData(payload, f[10:14])
+				copy(f[frameHeadersLen:], payload)
 			}
 		}
 
@@ -220,10 +224,6 @@ func (c *Conn) readFrame() (*Frame, error) {
 		}
 		if payloadLen > 125 {
 			return nil, errors.New("control frame payload length is too big (max 125)")
-		}
-	case ContinuationFrame:
-		if fin == 0x1 {
-			return nil, errors.New("continuation frames must not be final")
 		}
 	default:
 		return nil, errors.New("unknown opcode")
