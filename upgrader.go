@@ -25,13 +25,13 @@ func Upgrade(w http.ResponseWriter, r *http.Request) (*Conn, error) {
 		return nil, errors.New(msg)
 	}
 
-	if strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
 		msg := "Invalid Upgrade header"
 		http.Error(w, msg, http.StatusBadRequest)
 		return nil, errors.New(msg)
 	}
 
-	if strings.EqualFold(r.Header.Get("Connection"), "Upgrade") {
+	if !strings.EqualFold(r.Header.Get("Connection"), "Upgrade") {
 		msg := "Invalid Connection header"
 		http.Error(w, msg, http.StatusBadRequest)
 		return nil, errors.New(msg)

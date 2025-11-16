@@ -60,7 +60,6 @@ func (c *Conn) Close() error {
 	if c.status == statusClosed {
 		return nil
 	}
-	c.Write(ConnectionClose, nil)
 	err := c.conn.Close()
 	if err != nil {
 		return err
@@ -146,6 +145,7 @@ func (c *Conn) Read() (*Message, error) {
 
 		switch frame.OpCode {
 		case ConnectionClose:
+			c.Write(ConnectionClose, nil)
 			c.status = statusClosed
 			return &Message{Type: frame.OpCode, Data: frame.Payload}, ErrConnectionClosed
 		case Pong:
@@ -225,6 +225,7 @@ func (c *Conn) readFrame() (*Frame, error) {
 		if payloadLen > 125 {
 			return nil, errors.New("control frame payload length is too big (max 125)")
 		}
+	case ContinuationFrame, TextFrame, BinaryFrame:
 	default:
 		return nil, errors.New("unknown opcode")
 	}
