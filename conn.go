@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 )
 
 var ErrConnectionClosed = errors.New("connection was closed")
@@ -54,11 +55,12 @@ type Conn struct {
 	isServer bool
 	conn     net.Conn
 	br       *bufio.Reader
+	writeMux sync.Mutex
 }
 
 func (c *Conn) Close() error {
 	if c.status == statusClosed {
-		return nil
+		return ErrConnectionClosed
 	}
 	err := c.conn.Close()
 	if err != nil {
@@ -72,6 +74,9 @@ func (c *Conn) Write(msgType int, data []byte) error {
 	if c.status == statusClosed {
 		return ErrConnectionClosed
 	}
+
+	c.writeMux.Lock()
+	defer c.writeMux.Unlock()
 
 	mask := 0x1
 	if c.isServer {
@@ -145,8 +150,8 @@ func (c *Conn) Read() (*Message, error) {
 
 		switch frame.OpCode {
 		case ConnectionClose:
-			c.Write(ConnectionClose, nil)
-			c.status = statusClosed
+			c.Write(ConnectionClose, frame.Payload)
+			c.Close()
 			return &Message{Type: frame.OpCode, Data: frame.Payload}, ErrConnectionClosed
 		case Pong:
 			continue
