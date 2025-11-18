@@ -1,4 +1,4 @@
-package main
+package websocket
 
 import (
 	"bufio"
@@ -6,13 +6,14 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 )
 
-func Dial(ctx context.Context, urlStr string, header http.Header) (*Conn, error) {
+func Dial(ctx context.Context, urlStr string) (*Conn, error) {
 	u, err := url.Parse(urlStr)
 	if err != nil {
 		return nil, err
@@ -30,6 +31,7 @@ func Dial(ctx context.Context, urlStr string, header http.Header) (*Conn, error)
 		return nil, err
 	}
 
+	header := make(http.Header)
 	req := &http.Request{
 		Method: http.MethodGet,
 		URL:    u,
@@ -44,14 +46,12 @@ func Dial(ctx context.Context, urlStr string, header http.Header) (*Conn, error)
 	req.Header["Sec-WebSocket-Version"] = []string{"13"}
 
 	netDialer := net.Dialer{}
-	netConn, err := netDialer.DialContext(ctx, u.Scheme, u.Host)
-
+	netConn, err := netDialer.DialContext(ctx, "tcp", u.Host)
 	defer func() {
 		if err != nil && netConn != nil {
 			netConn.Close()
 		}
 	}()
-
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +77,11 @@ func Dial(ctx context.Context, urlStr string, header http.Header) (*Conn, error)
 		resp.Header.Get("Upgrade") == "" ||
 		resp.Header.Get("Connection") == "" ||
 		resp.Header.Get("Sec-WebSocket-Accept") != secAccept {
-		return nil, errors.New("handshake failed")
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("handshake failed: %s", data)
 	}
 
 	return conn, nil

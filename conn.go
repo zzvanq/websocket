@@ -1,4 +1,4 @@
-package main
+package websocket
 
 import (
 	"bufio"
@@ -8,7 +8,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"sync"
 )
 
 var ErrConnectionClosed = errors.New("connection was closed")
@@ -32,21 +31,21 @@ const (
 )
 const (
 	frameHeadersLen    = 14
-	maxFramePayloadLen = (10 * 1024) - frameHeadersLen
+	maxFramePayloadLen = (10 * 1460) - frameHeadersLen
 )
 const (
-	statusOpen   = iota + 1
-	statusClosed = iota
+	statusOpen = iota
+	statusClosed
 )
 
 type Frame struct {
-	OpCode  byte
+	OpCode  int
 	Fin     bool
 	Payload []byte
 }
 
 type Message struct {
-	Type byte
+	Type int
 	Data []byte
 }
 
@@ -55,7 +54,6 @@ type Conn struct {
 	isServer bool
 	conn     net.Conn
 	br       *bufio.Reader
-	writeMux sync.Mutex
 }
 
 func (c *Conn) Close() error {
@@ -74,9 +72,6 @@ func (c *Conn) Write(msgType int, data []byte) error {
 	if c.status == statusClosed {
 		return ErrConnectionClosed
 	}
-
-	c.writeMux.Lock()
-	defer c.writeMux.Unlock()
 
 	mask := 0x1
 	if c.isServer {
@@ -97,7 +92,7 @@ func (c *Conn) Write(msgType int, data []byte) error {
 		}
 		opCode := ContinuationFrame
 		if i == 0 {
-			opCode = int(msgType)
+			opCode = msgType
 		}
 		f[0] = byte((fin << 7) | opCode)
 
@@ -113,14 +108,13 @@ func (c *Conn) Write(msgType int, data []byte) error {
 
 		f[1] = byte((mask << 7) | payloadLen)
 
+		copy(f[frameHeadersLen:], payload)
 		if mask == 0x1 {
-			_, err := rand.Read(f[10:14])
-			if err != nil {
+			if _, err := rand.Read(f[10:14]); err != nil {
 				panic(err)
 			}
 			if payloadLen > 0 {
-				maskData(payload, f[10:14])
-				copy(f[frameHeadersLen:], payload)
+				maskData(f[frameHeadersLen:], f[10:14])
 			}
 		}
 
@@ -139,7 +133,7 @@ func (c *Conn) Read() (*Message, error) {
 
 	var (
 		recvd  []byte
-		opCode byte
+		opCode int
 	)
 
 	for {
@@ -195,10 +189,10 @@ func (c *Conn) readFrame() (*Frame, error) {
 	// rsv1 := headers[0] & rsv1Bit
 	// rsv2 := headers[0] & rsv2Bit
 	// rsv3 := headers[0] & rsv3Bit
-	opCode := headers[0] & opCodeMask
+	opCode := int(headers[0] & opCodeMask)
 
 	mask := headers[1] & maskBit
-	if (mask == 0x1) != c.isServer {
+	if (mask != 0x0) != c.isServer {
 		return nil, errors.New("incorrect MASK bit")
 	}
 
@@ -218,13 +212,13 @@ func (c *Conn) readFrame() (*Frame, error) {
 		return nil, err
 	}
 
-	if mask == 0x1 {
+	if mask != 0x0 {
 		maskData(payload, maskKey)
 	}
 
 	switch opCode {
 	case ConnectionClose, Ping, Pong:
-		if fin != 0x1 {
+		if fin == 0x0 {
 			return nil, errors.New("FIN not set on control frames")
 		}
 		if payloadLen > 125 {
@@ -235,7 +229,7 @@ func (c *Conn) readFrame() (*Frame, error) {
 		return nil, errors.New("unknown opcode")
 	}
 
-	return &Frame{Fin: fin == 0x1, OpCode: opCode, Payload: payload}, nil
+	return &Frame{Fin: fin != 0x0, OpCode: opCode, Payload: payload}, nil
 }
 
 func maskData(data []byte, key []byte) {

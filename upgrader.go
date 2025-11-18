@@ -1,4 +1,4 @@
-package main
+package websocket
 
 import (
 	"errors"
@@ -19,7 +19,7 @@ func Upgrade(w http.ResponseWriter, r *http.Request) (*Conn, error) {
 		return nil, errors.New(msg)
 	}
 
-	if r.Header.Get("Host") == "" {
+	if r.Host == "" {
 		msg := "Host header is not set"
 		http.Error(w, msg, http.StatusBadRequest)
 		return nil, errors.New(msg)
