@@ -233,13 +233,14 @@ func (c *Conn) readFrame() (*Frame, error) {
 }
 
 func maskData(data []byte, key []byte) {
-	// NOTE: i have no idea if loop unrolling is worth it. Just for fun
+	ukey32 := binary.LittleEndian.Uint32(key)
+	ukey := uint64(ukey32)<<32 | uint64(ukey32)
+
 	i := 0
-	for ; i+4 <= len(data); i += 4 {
-		data[i] ^= key[0]
-		data[i+1] ^= key[1]
-		data[i+2] ^= key[2]
-		data[i+3] ^= key[3]
+	for ; i+8 <= len(data); i += 8 {
+		d := data[i : i+8]
+		chunk := binary.LittleEndian.Uint64(d) ^ ukey
+		binary.LittleEndian.PutUint64(d, chunk)
 	}
 
 	for ; i < len(data); i++ {
